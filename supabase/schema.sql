@@ -503,6 +503,49 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.delete_credential(
+  p_identifier TEXT, p_ref_id TEXT DEFAULT NULL)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions, pg_temp AS $$
+DECLARE
+  v_actor_ref TEXT := public.session_ref_id();
+  v_actor_role TEXT := public.session_role();
+  v_count INT := 0;
+BEGIN
+  IF NOT public.is_admin() THEN
+    INSERT INTO public.audit_logs (action, entity, actor_ref, actor_role, details)
+    VALUES ('SECURITY_VIOLATION_UNAUTHORIZED_ACCOUNT_DELETION', 'credentials', v_actor_ref, v_actor_role,
+            jsonb_build_object('target_identifier', p_identifier, 'target_ref_id', p_ref_id));
+    RETURN jsonb_build_object('ok', false, 'message', 'Access denied: Only administrators may delete user accounts.');
+  END IF;
+
+  -- Prevent deleting the master admin account
+  IF lower(trim(p_identifier)) = 'admin' OR p_ref_id = 'admin' THEN
+    RETURN jsonb_build_object('ok', false, 'message', 'The primary Administrator account cannot be deleted.');
+  END IF;
+
+  DELETE FROM public.credentials
+   WHERE lower(identifier) = lower(trim(p_identifier))
+      OR (p_ref_id IS NOT NULL AND lower(ref_id) = lower(trim(p_ref_id)));
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+
+  IF p_ref_id IS NOT NULL THEN
+    DELETE FROM public.user_roles WHERE lower(session_ref_id) = lower(trim(p_ref_id));
+    DELETE FROM public.sessions WHERE lower(ref_id) = lower(trim(p_ref_id));
+  ELSE
+    DELETE FROM public.user_roles WHERE lower(identifier) = lower(trim(p_identifier));
+  END IF;
+
+  INSERT INTO public.audit_logs (action, entity, actor_ref, actor_role, details)
+  VALUES ('CREDENTIAL_DELETED', 'credentials', v_actor_ref, v_actor_role,
+          jsonb_build_object('identifier', p_identifier, 'ref_id', p_ref_id, 'deleted_count', v_count));
+
+  RETURN jsonb_build_object('ok', true, 'deleted', v_count);
+END;
+$$;
+
 -- Elevate a scholar to faculty tutor, reassigning credential role strictly to tutor
 CREATE OR REPLACE FUNCTION public.upgrade_student_to_tutor(
   p_student_id TEXT,
@@ -708,6 +751,7 @@ GRANT EXECUTE ON FUNCTION public.verify_login(TEXT, TEXT) TO anon, authenticated
 GRANT EXECUTE ON FUNCTION public.logout_session(TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.change_password(TEXT, TEXT, TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.create_credential(TEXT, TEXT, TEXT, TEXT, TEXT[]) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_credential(TEXT, TEXT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.put_states(JSONB) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.delete_states(TEXT[]) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.is_admin_session() TO anon, authenticated;
@@ -743,7 +787,14 @@ INSERT INTO public.school_state (key, is_public) VALUES
   ('stanbax_role_privileges', true),
   ('stanbax_headmistress_profile', true),
   ('stanbax_moderators', true),
-  ('stanbax_alumni_registrations', true)
+  ('stanbax_alumni_registrations', true),
+  ('stanbax_campus_gallery_photos', true),
+  ('stanbax_students', true),
+  ('stanbax_tutors', true),
+  ('stanbax_classes', true),
+  ('stanbax_subjects', true),
+  ('stanbax_applications', true),
+  ('stanbax_official_signatures', true)
 ON CONFLICT (key) DO UPDATE SET is_public = EXCLUDED.is_public;
 
 INSERT INTO public.credentials (identifier, aliases, password_hash, role, ref_id) VALUES

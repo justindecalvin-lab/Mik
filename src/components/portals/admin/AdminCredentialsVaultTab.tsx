@@ -16,7 +16,8 @@ import {
   Filter, 
   Users, 
   GraduationCap, 
-  Building2 
+  Building2,
+  Trash2
 } from '../../RealIcons';
 import { isRemoteEnabled } from '../../../lib/supabase';
 
@@ -24,6 +25,7 @@ export const AdminCredentialsVaultTab: React.FC = () => {
   const { 
     getAllUserCredentials, 
     adminResetUserPassword, 
+    adminDeleteUserAccount,
     changePassword,
     adminSecurityQuestion,
     adminSecurityAnswer,
@@ -54,6 +56,11 @@ export const AdminCredentialsVaultTab: React.FC = () => {
   const [selectedUserForReset, setSelectedUserForReset] = useState<UserCredentialItem | null>(null);
   const [resetNewPass, setResetNewPass] = useState('');
   const [resetFeedback, setResetFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // User account deletion modal
+  const [selectedUserForDelete, setSelectedUserForDelete] = useState<UserCredentialItem | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
+  const [deleteFeedback, setDeleteFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   const allCredentials = getAllUserCredentials();
 

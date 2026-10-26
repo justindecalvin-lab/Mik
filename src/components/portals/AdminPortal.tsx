@@ -56,6 +56,7 @@ import { AdminFamilyLinkageModal } from './admin/AdminFamilyLinkageModal';
 import { SchoolChatSystem } from '../chat/SchoolChatSystem';
 import { SchoolPrefectBadgesModal } from '../chat/ChatLeadershipModals';
 import { NetlifyCloudSyncModal } from './admin/NetlifyCloudSyncModal';
+import { StudentRosterDirectoryModal } from '../StudentRosterDirectoryModal';
 import { isRemoteEnabled } from '../../lib/supabase';
 import { Newspaper, Compass, Database, HeartHandshake, ClipboardCheck } from 'lucide-react';
 
@@ -117,6 +118,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
   const [showCloudSyncModal, setShowCloudSyncModal] = useState(false);
   const [showQuickAddModal, setShowQuickAddModal] = useState(false);
   const [showFamilyModal, setShowFamilyModal] = useState(false);
+  const [showRosterModal, setShowRosterModal] = useState(false);
 
   const handleLogout = () => {
     logoutAdmin();
@@ -218,6 +220,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
             <Users className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">+ Quick Add Scholar</span>
             <span className="sm:hidden">+ Scholar</span>
+          </button>
+
+          {/* View Enrolled Student Roster & Fast Sign-In */}
+          <button
+            type="button"
+            onClick={() => setShowRosterModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-black rounded-xl bg-gradient-to-r from-red-800 via-red-900 to-amber-900 hover:from-red-900 hover:to-amber-950 text-white transition-all cursor-pointer shadow-xs border border-amber-500/40"
+            title="View Enrolled Student Roster & Fast Sign-In Directory"
+            id="btn-admin-student-roster"
+          >
+            <GraduationCap className="w-3.5 h-3.5 text-amber-300" />
+            <span className="hidden sm:inline">Student Roster</span>
+            <span className="text-[10px] font-bold bg-amber-400 text-neutral-950 px-1.5 py-0.2 rounded-full">
+              {students.length}
+            </span>
           </button>
 
           <button
@@ -360,6 +377,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
                   </div>
                   <div className="text-2xl font-black text-stone-900 mt-2">{students.length}</div>
                   <div className="text-xs text-stone-500 mt-1">Across all primary & secondary arms</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowRosterModal(true)}
+                    className="w-full mt-3 py-1.5 px-3 rounded-xl bg-gradient-to-r from-red-800 via-red-900 to-amber-900 hover:from-red-900 hover:to-amber-950 text-white font-black text-xs shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer border border-amber-500/30"
+                    title="View Enrolled Student Roster & Fast Sign-In Directory"
+                  >
+                    <GraduationCap className="w-3.5 h-3.5 text-amber-300" />
+                    <span>View Student Roster ({students.length})</span>
+                  </button>
                 </div>
 
                 <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-xs">
@@ -638,6 +664,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onBackToWebsite }) => 
       <AdminFamilyLinkageModal
         isOpen={showFamilyModal}
         onClose={() => setShowFamilyModal(false)}
+      />
+
+      {/* Enrolled Student Roster & Fast Sign-In Directory Modal */}
+      <StudentRosterDirectoryModal
+        isOpen={showRosterModal}
+        onClose={() => setShowRosterModal(false)}
+        students={students}
+        onSelectStudent={(student) => {
+          setShowRosterModal(false);
+          localStorage.setItem('stanbax_student_auth', 'true');
+          localStorage.setItem('stanbax_student_id', student.id);
+          localStorage.setItem('stanbax_active_section', 'student-portal');
+          window.location.reload();
+        }}
       />
     </div>
   );

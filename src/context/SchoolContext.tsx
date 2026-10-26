@@ -6,6 +6,7 @@ import {
   completeRemoteLogin,
   remoteLogout,
   remoteCreateCredential,
+  remoteDeleteCredential,
   remoteChangePassword,
   remoteCheckCredentials,
   syncStateOnline,
@@ -454,6 +455,11 @@ interface SchoolContextType {
     userRole: UserRole,
     newPassword: string,
     cloudIdentifier?: string
+  ) => Promise<{ success: boolean; message: string }>;
+  adminDeleteUserAccount: (
+    userId: string,
+    userRole: string,
+    identifier?: string
   ) => Promise<{ success: boolean; message: string }>;
   adminSecurityQuestion: string;
   adminSecurityAnswer: string;
@@ -2650,6 +2656,8 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       newStudent.id,
       [newStudent.email, newStudent.name.toLowerCase()].filter((x): x is string => Boolean(x))
     );
+
+    void syncStateOnline('stanbax_students', [newStudent, ...students]);
 
     return newStudent;
   };
@@ -5750,6 +5758,149 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return { success: true, message: 'Password updated in Supabase.' };
   };
 
+  const adminDeleteUserAccount = async (
+    userId: string,
+    userRole: string,
+    identifier?: string
+  ): Promise<{ success: boolean; message: string }> => {
+    // 1. Never delete master admin
+    if (userRole === 'admin' || userId === 'usr-admin' || userId === 'admin' || (identifier && identifier.toLowerCase() === 'admin')) {
+      return { success: false, message: 'The master Administrator account is protected by institutional policy and cannot be deleted.' };
+    }
+
+    try {
+      // 2. Clear credentials from Supabase public.credentials
+      const cleanRefId = userId.startsWith('usr-') ? userId.replace(/^usr-/, '') : userId;
+      if (isRemoteEnabled()) {
+        try {
+          await remoteDeleteCredential(identifier || cleanRefId, cleanRefId);
+        } catch (e) {
+          console.warn('[Remote Delete Credential Warning]', e);
+        }
+      }
+
+      // 3. Remove scholar / alumni account
+      if (userRole === 'student' || userRole === 'alumni') {
+        const studentId = cleanRefId;
+        const matched = students.find(s => s.id === studentId || (identifier && s.regNumber.toLowerCase() === identifier.toLowerCase()));
+        const targetId = matched?.id || studentId;
+
+        let nextStudents: StudentProfile[] = [];
+        setStudents(prev => {
+          nextStudents = prev.filter(s => s.id !== targetId && (!identifier || s.regNumber.toLowerCase() !== identifier.toLowerCase()));
+          try { localStorage.setItem('stanbax_students', JSON.stringify(nextStudents)); } catch {}
+          return nextStudents;
+        });
+
+        let nextAlumni: AlumniRegistration[] = [];
+        setAlumniRegistrations(prev => {
+          nextAlumni = prev.filter(r => r.assignedStudentId !== targetId && (!identifier || r.formerRegNumber?.toLowerCase() !== identifier.toLowerCase()));
+          try { localStorage.setItem('stanbax_alumni_registrations', JSON.stringify(nextAlumni)); } catch {}
+          return nextAlumni;
+        });
+
+        // Also clean WAEC registrations if any
+        setWaecRegistrations(prev => {
+          const nextWaec = prev.filter(w => w.studentId !== targetId && (!identifier || w.studentRegNumber?.toLowerCase() !== identifier.toLowerCase()));
+          try { localStorage.setItem('stanbax_waec_registrations', JSON.stringify(nextWaec)); } catch {}
+          void syncStateOnline('stanbax_waec_registrations', nextWaec);
+          return nextWaec;
+        });
+
+        // Delete from server backend if online
+        void fetch(`/api/students/${encodeURIComponent(targetId)}`, { method: 'DELETE' }).catch(() => {});
+
+        // Sync changes online
+        broadcastLocalStateChange('stanbax_students', nextStudents);
+        broadcastLocalStateChange('stanbax_alumni_registrations', nextAlumni);
+        void syncStateOnline('stanbax_students', nextStudents);
+        void syncStateOnline('stanbax_alumni_registrations', nextAlumni);
+
+        return {
+          success: true,
+          message: `Scholar account (${matched?.name || identifier || targetId}) permanently deleted from records and Supabase credentials vault.`
+        };
+      }
+
+      // 4. Remove Faculty Tutor
+      if (userRole === 'tutor') {
+        const tutorId = cleanRefId;
+        const matched = tutors.find(t => t.id === tutorId || (identifier && (t.email.toLowerCase() === identifier.toLowerCase() || t.staffId?.toLowerCase() === identifier.toLowerCase())));
+        const targetId = matched?.id || tutorId;
+
+        let nextTutors: TutorProfile[] = [];
+        setTutors(prev => {
+          nextTutors = prev.filter(t => t.id !== targetId);
+          try { localStorage.setItem('stanbax_tutors', JSON.stringify(nextTutors)); } catch {}
+          return nextTutors;
+        });
+
+        broadcastLocalStateChange('stanbax_tutors', nextTutors);
+        void syncStateOnline('stanbax_tutors', nextTutors);
+
+        return {
+          success: true,
+          message: `Faculty Tutor account (${matched?.name || identifier || targetId}) permanently deleted from staff records and Supabase.`
+        };
+      }
+
+      // 5. Remove Parent Account
+      if (userRole === 'parent') {
+        const parentId = cleanRefId;
+        const matched = parents.find(p => p.id === parentId || (identifier && (p.phone === identifier || p.email === identifier)));
+        const targetId = matched?.id || parentId;
+
+        let nextParents: ParentProfile[] = [];
+        setParents(prev => {
+          nextParents = prev.filter(p => p.id !== targetId);
+          try { localStorage.setItem('stanbax_parents_list', JSON.stringify(nextParents)); } catch {}
+          return nextParents;
+        });
+
+        broadcastLocalStateChange('stanbax_parents_list', nextParents);
+        void syncStateOnline('stanbax_parents_list', nextParents);
+
+        return {
+          success: true,
+          message: `Parent profile (${matched?.fullName || identifier || targetId}) permanently removed from family directory and Supabase.`
+        };
+      }
+
+      // 6. Remove Moderator Account
+      if (userRole === 'moderator') {
+        const modId = cleanRefId;
+        const matched = moderators.find(m => m.id === modId || (identifier && m.email.toLowerCase() === identifier.toLowerCase()));
+        const targetId = matched?.id || modId;
+
+        let nextMods: ModeratorProfile[] = [];
+        setModerators(prev => {
+          nextMods = prev.filter(m => m.id !== targetId);
+          try { localStorage.setItem('stanbax_moderators', JSON.stringify(nextMods)); } catch {}
+          return nextMods;
+        });
+
+        broadcastLocalStateChange('stanbax_moderators', nextMods);
+        void syncStateOnline('stanbax_moderators', nextMods);
+
+        return {
+          success: true,
+          message: `Moderator account (${matched?.name || identifier || targetId}) permanently removed.`
+        };
+      }
+
+      return {
+        success: true,
+        message: `Account credential (${identifier || userId}) removed successfully.`
+      };
+    } catch (err: any) {
+      console.error('[Admin Delete User Error]', err);
+      return {
+        success: false,
+        message: err?.message || 'An error occurred while deleting user account.'
+      };
+    }
+  };
+
   // 14. Teacher Lesson Notes & Academic Materials
   const [notesFeatureEnabled, setNotesFeatureEnabled] = useState<boolean>(() => {
     try {
@@ -7715,6 +7866,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } catch (err) {
         console.warn('Storage error on gallery photo', err);
       }
+      void syncStateOnline('stanbax_campus_gallery_photos', next);
       return next;
     });
   };
@@ -9429,6 +9581,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         resetPasswordWithSecurityAnswer,
         getAllUserCredentials,
         adminResetUserPassword,
+        adminDeleteUserAccount,
         adminSecurityQuestion,
         adminSecurityAnswer,
         updateAdminSecurityQuestion,

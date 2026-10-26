@@ -34,6 +34,7 @@ import { NetlifyCloudSyncModal } from './NetlifyCloudSyncModal';
 import { CustomResultsManagerModal } from './CustomResultsManagerModal';
 import { AdminEditStudentModal } from './AdminEditStudentModal';
 import { AdminFamilyLinkageModal } from './AdminFamilyLinkageModal';
+import { StudentRosterDirectoryModal } from '../../StudentRosterDirectoryModal';
 import { Edit3, Calendar as CalendarIcon } from 'lucide-react';
 
 export const AdminStudentsAlumniTab: React.FC = () => {
@@ -112,6 +113,7 @@ export const AdminStudentsAlumniTab: React.FC = () => {
   const [newTutorRole, setNewTutorRole] = useState('Subject Teacher');
   const [newTutorQual, setNewTutorQual] = useState('B.Sc / B.Ed, TRCN Certified');
   const [newTutorPhone, setNewTutorPhone] = useState('+234 803 000 0000');
+  const [showRosterModal, setShowRosterModal] = useState(false);
 
   const filteredStudents = students.filter(s => {
     const matchesSearch = 
@@ -363,6 +365,21 @@ export const AdminStudentsAlumniTab: React.FC = () => {
           >
             <UserPlus className="w-4 h-4 text-neutral-950" />
             <span>Register New Scholar</span>
+          </button>
+
+          {/* Enrolled Student Roster & Fast Sign-In Directory Button */}
+          <button
+            type="button"
+            onClick={() => setShowRosterModal(true)}
+            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-800 via-red-900 to-amber-900 hover:from-red-900 hover:to-amber-950 text-white text-xs font-black shadow-md cursor-pointer transition flex items-center gap-2 border border-amber-500/40 active:scale-98"
+            title="View Enrolled Student Roster & Fast Sign-In Directory"
+            id="btn-admin-tab-student-roster"
+          >
+            <GraduationCap className="w-4 h-4 text-amber-300" />
+            <span>Enrolled Student Roster</span>
+            <span className="text-[10px] font-bold bg-amber-400 text-neutral-950 px-2 py-0.5 rounded-full ml-1">
+              {students.length} Scholars
+            </span>
           </button>
 
           <button
@@ -1258,6 +1275,20 @@ export const AdminStudentsAlumniTab: React.FC = () => {
       <AdminFamilyLinkageModal
         isOpen={showFamilyModal}
         onClose={() => setShowFamilyModal(false)}
+      />
+
+      {/* Enrolled Student Roster & Fast Sign-In Directory Modal */}
+      <StudentRosterDirectoryModal
+        isOpen={showRosterModal}
+        onClose={() => setShowRosterModal(false)}
+        students={students}
+        onSelectStudent={(student) => {
+          setShowRosterModal(false);
+          localStorage.setItem('stanbax_student_auth', 'true');
+          localStorage.setItem('stanbax_student_id', student.id);
+          localStorage.setItem('stanbax_active_section', 'student-portal');
+          window.location.reload();
+        }}
       />
     </div>
   );

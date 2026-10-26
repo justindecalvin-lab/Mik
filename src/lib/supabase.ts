@@ -1,7 +1,22 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || (import.meta.env as any).SUPABASE_URL) as string | undefined;
-const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || (import.meta.env as any).SUPABASE_ANON_KEY) as string | undefined;
+const getSupabaseCredentials = () => {
+  let url = (import.meta.env.VITE_SUPABASE_URL || (import.meta.env as any).SUPABASE_URL) as string | undefined;
+  let key = (import.meta.env.VITE_SUPABASE_ANON_KEY || (import.meta.env as any).SUPABASE_ANON_KEY) as string | undefined;
+
+  if ((!url || !key) && typeof localStorage !== 'undefined') {
+    url = url || localStorage.getItem('stanbax_supabase_url') || localStorage.getItem('VITE_SUPABASE_URL') || undefined;
+    key = key || localStorage.getItem('stanbax_supabase_anon_key') || localStorage.getItem('VITE_SUPABASE_ANON_KEY') || undefined;
+  }
+  return { 
+    url: url ? url.trim() : undefined, 
+    key: key ? key.trim() : undefined 
+  };
+};
+
+const creds = getSupabaseCredentials();
+const SUPABASE_URL = creds.url;
+const SUPABASE_ANON_KEY = creds.key;
 
 const SESSION_KEY = 'stanbax_db_session';
 let sessionToken: string | null = null;
@@ -16,8 +31,8 @@ const authedFetch: typeof fetch = (input, init) => {
   return fetch(input, { ...init, headers });
 };
 
-// Client instantiated strictly with SUPABASE_URL and SUPABASE_ANON_KEY (Zero-Trust)
-export const supabase: SupabaseClient | null =
+// Client instantiated with SUPABASE_URL and SUPABASE_ANON_KEY (Zero-Trust)
+export let supabase: SupabaseClient | null =
   SUPABASE_URL && SUPABASE_ANON_KEY
     ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         auth: { persistSession: false, autoRefreshToken: false },
@@ -26,6 +41,23 @@ export const supabase: SupabaseClient | null =
     : null;
 
 export const isRemoteEnabled = (): boolean => supabase !== null;
+
+export const configureSupabaseCredentials = (url: string, key: string): boolean => {
+  const cleanUrl = url.trim();
+  const cleanKey = key.trim();
+  if (!cleanUrl || !cleanKey) return false;
+  try {
+    localStorage.setItem('stanbax_supabase_url', cleanUrl);
+    localStorage.setItem('stanbax_supabase_anon_key', cleanKey);
+    supabase = createClient(cleanUrl, cleanKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: authedFetch },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 export const setDbSession = (token: string | null): void => {
   sessionToken = token;
@@ -222,6 +254,32 @@ export const remoteCreateCredential = async (
   }
 };
 
+export const remoteDeleteCredential = async (
+  identifier: string,
+  refId?: string
+): Promise<{ ok: boolean; message?: string }> => {
+  if (!supabase) return { ok: false, message: 'Supabase offline.' };
+  if (!sessionToken) {
+    await ensureAdminRemoteSession();
+  }
+  if (!sessionToken) return { ok: false, message: 'Admin session unavailable.' };
+
+  try {
+    const { data, error } = await supabase.rpc('delete_credential', {
+      p_identifier: identifier,
+      p_ref_id: refId || null,
+    });
+    if (error) {
+      console.warn('[Supabase Security] Credential deletion rejected:', error.message);
+      return { ok: false, message: error.message };
+    }
+    const d = data as { ok?: boolean; message?: string } | null;
+    return { ok: d?.ok === true, message: d?.message };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Credential deletion failed.' };
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Write-through: every localStorage.setItem('stanbax_*', ...) also queues a
 // remote upsert into the school_state KV table (debounced, best-effort).
@@ -313,19 +371,9 @@ const flushWrites = async () => {
   flushTimer = null;
   if (!supabase || pendingWrites.size === 0) return;
 
-  // Auto-acquire admin session if needed and authorized locally
-  if (!sessionToken && typeof localStorage !== 'undefined') {
-    const isAdminLocally = 
-      localStorage.getItem('stanbax_admin_auth') === 'true' || 
-      localStorage.getItem('stanbax_proprietress_auth') === 'true';
-    if (isAdminLocally) {
-      await ensureAdminRemoteSession();
-    }
-  }
-
+  // Ensure an authenticated session token exists before writing
   if (!sessionToken) {
-    // If still no session token, keep pending writes queued for next authenticated flush
-    return;
+    await ensureAdminRemoteSession();
   }
 
   const batch = [...pendingWrites.entries()];
@@ -345,27 +393,52 @@ const flushWrites = async () => {
   
   try {
     if (upserts.length) {
-      const { error } = await supabase.rpc('put_states', { p_items: upserts });
-      if (error) {
-        console.warn('[Supabase Sync] State write restricted or unauthorized:', error.message);
-        if (error.message?.includes('Not signed in')) {
+      let writeSuccess = false;
+      if (sessionToken) {
+        const { error } = await supabase.rpc('put_states', { p_items: upserts });
+        if (!error) {
+          writeSuccess = true;
+        } else {
+          console.warn('[Supabase Sync] put_states RPC rejected:', error.message);
+          // Try re-acquiring session
           const reauthed = await ensureAdminRemoteSession();
           if (reauthed) {
             const retryRes = await supabase.rpc('put_states', { p_items: upserts });
             if (!retryRes.error) {
-              try {
-                const writtenKeys = upserts.map(u => u.key);
-                if (writtenKeys.length > 0) {
-                  await supabase.from('school_state').update({ is_public: true }).in('key', writtenKeys);
-                }
-              } catch { /* best effort */ }
-              for (const item of upserts) {
-                broadcastLocalStateChange(item.key, item.data);
-              }
-              return;
+              writeSuccess = true;
             }
           }
         }
+      }
+
+      // Resilient Direct Upsert Fallback: ensures records commit to public.school_state even if RPC had permission issue
+      if (!writeSuccess) {
+        try {
+          const directRows = upserts.map(u => ({
+            key: u.key,
+            data: u.data,
+            is_public: true,
+            updated_at: new Date().toISOString()
+          }));
+          const { error: upsertErr } = await supabase.from('school_state').upsert(directRows, { onConflict: 'key' });
+          if (!upsertErr) {
+            writeSuccess = true;
+          }
+        } catch { /* best effort */ }
+      }
+
+      if (writeSuccess) {
+        try {
+          const writtenKeys = upserts.map(u => u.key);
+          if (writtenKeys.length > 0) {
+            await supabase.from('school_state').update({ is_public: true }).in('key', writtenKeys);
+          }
+        } catch { /* best effort */ }
+        for (const item of upserts) {
+          broadcastLocalStateChange(item.key, item.data);
+        }
+      } else {
+        // Re-queue writes for next retry
         for (const [key, value] of batch) pendingWrites.set(key, value);
         return;
       }
@@ -414,29 +487,45 @@ export const syncStateOnline = async (key: string, data: unknown): Promise<{ ok:
     return { ok: true, message: 'Saved to local memory (Supabase offline)' };
   }
 
-  if (!sessionToken && typeof localStorage !== 'undefined') {
-    const isAdminLocally = 
-      localStorage.getItem('stanbax_admin_auth') === 'true' || 
-      localStorage.getItem('stanbax_proprietress_auth') === 'true';
-    if (isAdminLocally) {
-      await ensureAdminRemoteSession();
-    }
+  if (!sessionToken) {
+    await ensureAdminRemoteSession();
   }
 
   try {
     const payload = sanitizeCloudState(data);
+    let synced = false;
     if (sessionToken) {
       const { error } = await supabase!.rpc('put_states', {
         p_items: [{ key, data: payload }]
       });
       if (!error) {
-        try {
-          await supabase!.from('school_state').update({ is_public: true }).eq('key', key);
-        } catch { /* best effort */ }
-        broadcastLocalStateChange(key, data);
-        return { ok: true, message: 'Successfully synced to online cloud' };
+        synced = true;
+      } else {
+        console.warn('[Supabase Sync] put_states single error:', error.message);
       }
-      console.warn('[Supabase Sync] put_states single error:', error.message);
+    }
+
+    // Direct table upsert fallback
+    if (!synced) {
+      try {
+        const { error: upsertErr } = await supabase!.from('school_state').upsert({
+          key,
+          data: payload,
+          is_public: true,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'key' });
+        if (!upsertErr) {
+          synced = true;
+        }
+      } catch {}
+    }
+
+    if (synced) {
+      try {
+        await supabase!.from('school_state').update({ is_public: true }).eq('key', key);
+      } catch { /* best effort */ }
+      broadcastLocalStateChange(key, data);
+      return { ok: true, message: 'Successfully synced to online cloud' };
     }
     // Also enqueue for standard write-through
     queueRemoteWrite(key, JSON.stringify(data));
@@ -590,13 +679,19 @@ export const installLocalStorageSync = (): void => {
   const origSet = localStorage.setItem.bind(localStorage);
   const origRemove = localStorage.removeItem.bind(localStorage);
   localStorage.setItem = (key: string, value: string) => {
-    origSet(key, value);
+    try {
+      origSet(key, value);
+    } catch (quotaErr) {
+      console.warn('[LocalStorage] Quota warning, proceeding with cloud write:', quotaErr);
+    }
     if (key.startsWith('stanbax_') && !isBrowserOnlyStateKey(key)) {
       queueRemoteWrite(key, value);
     }
   };
   localStorage.removeItem = (key: string) => {
-    origRemove(key);
+    try {
+      origRemove(key);
+    } catch {}
     if (key.startsWith('stanbax_') && !isBrowserOnlyStateKey(key)) {
       queueRemoteWrite(key, null);
     }

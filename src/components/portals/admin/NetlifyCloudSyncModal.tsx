@@ -20,7 +20,7 @@ import {
   Laptop
 } from '../../RealIcons';
 import { useSchool } from '../../../context/SchoolContext';
-import { isRemoteEnabled } from '../../../lib/supabase';
+import { isRemoteEnabled, configureSupabaseCredentials, syncLocalSchoolStateToSupabase } from '../../../lib/supabase';
 import schemaSql from '../../../../supabase/schema.sql?raw';
 
 interface NetlifyCloudSyncModalProps {
@@ -40,9 +40,71 @@ export const NetlifyCloudSyncModal: React.FC<NetlifyCloudSyncModalProps> = ({
   const [isExporting, setIsExporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [directUrl, setDirectUrl] = useState(() => {
+    try {
+      return localStorage.getItem('stanbax_supabase_url') || '';
+    } catch { return ''; }
+  });
+  const [directKey, setDirectKey] = useState(() => {
+    try {
+      return localStorage.getItem('stanbax_supabase_anon_key') || '';
+    } catch { return ''; }
+  });
+  const [connectMessage, setConnectMessage] = useState<{ success: boolean; text: string } | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+
   if (!isOpen) return null;
 
   const isConnected = isRemoteEnabled();
+
+  const handleSaveDirectCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!directUrl.trim() || !directKey.trim()) {
+      setConnectMessage({ success: false, text: 'Please enter both the Supabase Project URL and Anon Public Key.' });
+      return;
+    }
+    setIsConnecting(true);
+    setConnectMessage(null);
+    try {
+      const ok = configureSupabaseCredentials(directUrl.trim(), directKey.trim());
+      if (ok) {
+        setConnectMessage({ success: true, text: 'Credentials saved! Uploading all current school records to Supabase...' });
+        const syncRes = await syncLocalSchoolStateToSupabase();
+        setConnectMessage({
+          success: syncRes.ok,
+          text: syncRes.ok
+            ? `Connected! ${syncRes.written} records successfully synced to Supabase database.`
+            : `Connected! Sync status: ${syncRes.message}`
+        });
+        setTimeout(() => {
+          window.location.reload();
+        }, 1800);
+      } else {
+        setConnectMessage({ success: false, text: 'Failed to configure Supabase credentials.' });
+      }
+    } catch (err: any) {
+      setConnectMessage({ success: false, text: err?.message || 'Connection error.' });
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleSyncAllNow = async () => {
+    setIsSyncingAll(true);
+    setConnectMessage(null);
+    try {
+      const res = await syncLocalSchoolStateToSupabase();
+      setConnectMessage({
+        success: res.ok,
+        text: res.ok ? `Successfully uploaded ${res.written} records directly to Supabase!` : res.message
+      });
+    } catch (err: any) {
+      setConnectMessage({ success: false, text: err?.message || 'Sync failed.' });
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
 
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -186,6 +248,88 @@ export const NetlifyCloudSyncModal: React.FC<NetlifyCloudSyncModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* DIRECT CLOUD CONNECTION PANEL */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-stone-900 to-stone-950 text-white border border-stone-700 shadow-md space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-amber-400" />
+                <h4 className="font-black text-sm text-stone-100">
+                  {isConnected ? 'Supabase Live Connection Active' : 'Direct Supabase Connection (Instant Sync)'}
+                </h4>
+              </div>
+              <span className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full ${
+                isConnected ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+              }`}>
+                {isConnected ? 'Connected' : 'Offline / Setup Pending'}
+              </span>
+            </div>
+
+            <p className="text-xs text-stone-300 leading-relaxed">
+              Paste your Supabase credentials here to instantly connect your school database right now, or add them as environment variables in Netlify. Once connected, every registration, fee payment, grade change, and file upload is committed directly to PostgreSQL.
+            </p>
+
+            <form onSubmit={handleSaveDirectCredentials} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block text-stone-400 font-bold mb-1 text-[11px]">
+                    Supabase Project URL:
+                  </label>
+                  <input
+                    type="url"
+                    value={directUrl}
+                    onChange={(e) => setDirectUrl(e.target.value)}
+                    placeholder="https://xyzabcdefg.supabase.co"
+                    className="w-full px-3 py-2 rounded-xl bg-stone-800 border border-stone-700 text-stone-100 font-mono text-xs focus:ring-2 focus:ring-amber-400 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-stone-400 font-bold mb-1 text-[11px]">
+                    Supabase Anon Public Key:
+                  </label>
+                  <input
+                    type="text"
+                    value={directKey}
+                    onChange={(e) => setDirectKey(e.target.value)}
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    className="w-full px-3 py-2 rounded-xl bg-stone-800 border border-stone-700 text-stone-100 font-mono text-xs focus:ring-2 focus:ring-amber-400 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {connectMessage && (
+                <div className={`p-2.5 rounded-xl text-xs font-bold flex items-center gap-2 ${
+                  connectMessage.success ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700' : 'bg-red-950/80 text-red-300 border border-red-700'
+                }`}>
+                  {connectMessage.success ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+                  <span>{connectMessage.text}</span>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={isConnecting}
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-black text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>{isConnecting ? 'Connecting & Syncing...' : 'Save & Connect Cloud Database'}</span>
+                </button>
+
+                {isConnected && (
+                  <button
+                    type="button"
+                    onClick={handleSyncAllNow}
+                    disabled={isSyncingAll}
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-black text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAll ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingAll ? 'Uploading Records...' : 'Upload & Sync All Current School Data Now'}</span>
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
 
           {/* THE PERMANENT FIX */}
           <div className="space-y-4">
